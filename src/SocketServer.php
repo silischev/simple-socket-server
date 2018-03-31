@@ -3,6 +3,7 @@
 namespace Asil\Otus\HomeTask_2;
 
 use Asil\Otus\HomeTask_2\Exceptions\SocketException;
+use Asil\Otus\HomeTask_2\Services\SignalHandleService;
 use Asil\Otus\HomeTask_2\Services\SocketDataValidationService;
 
 class SocketServer implements SocketInterface
@@ -36,7 +37,7 @@ class SocketServer implements SocketInterface
     private $socket;
 
     /**
-     * Function that trigger on send message buy socket client
+     * Function that trigger on send message bu socket client
      *
      * @var callable
      */
@@ -78,6 +79,14 @@ class SocketServer implements SocketInterface
     }
 
     /**
+     * @return int
+     */
+    public function getPort()
+    {
+        return $this->port;
+    }
+
+    /**
      * Run server
      *
      * @throws \Exception
@@ -87,7 +96,11 @@ class SocketServer implements SocketInterface
         try {
             $this->buildSocket();
 
+            declare(ticks = 1);
+            SignalHandleService::sighupHandle($this);
+
             do {
+                pcntl_signal_dispatch();
                 $this->loop();
             } while (true);
 
@@ -112,6 +125,22 @@ class SocketServer implements SocketInterface
 
         if ($this->socket === false) {
             throw new SocketException('Couldn`t create socket: ');
+        }
+
+        return $this;
+    }
+
+    /**
+     * Set nonblock mode for socket
+     *
+     * @return $this
+     *
+     * @throws SocketException
+     */
+    public function setNonBlock()
+    {
+        if (socket_set_nonblock($this->socket) === false) {
+            throw new SocketException('Couldn`t set nonblock mode for socket: ');
         }
 
         return $this;
@@ -163,15 +192,17 @@ class SocketServer implements SocketInterface
         $except = null;
         $timeout = 5;
 
-        $this->socketsStorage[] = $this->socket;
-        $this->socketsStorage = array_merge($this->socketsStorage, $this->clients);
+        if (is_resource($this->socket)) {
+            $this->socketsStorage[] = $this->socket;
+            $this->socketsStorage = array_merge($this->socketsStorage, $this->clients);
 
-        if (socket_select($this->socketsStorage, $write, $except, $timeout) === false) {
-            throw new SocketException('Couldn`t accept array of sockets: ');
-        }
+            if (socket_select($this->socketsStorage, $write, $except, $timeout) === false) {
+                throw new SocketException('Couldn`t accept array of sockets: ');
+            }
 
-        if (in_array($this->socket, $this->socketsStorage)) {
-            $this->clients[] = $this->accept();
+            if (in_array($this->socket, $this->socketsStorage)) {
+                $this->clients[] = $this->accept();
+            }
         }
     }
 
@@ -237,7 +268,10 @@ class SocketServer implements SocketInterface
      */
     public function close($client)
     {
-        socket_close($client);
+        if (is_resource($client)) {
+            socket_shutdown($client);
+            socket_close($client);
+        }
     }
 
     /**
@@ -270,7 +304,8 @@ class SocketServer implements SocketInterface
         $this
             ->create()
             ->bind()
-            ->listen();
+            ->listen()
+            ->setNonBlock();
 
         return $this;
     }
@@ -295,7 +330,9 @@ class SocketServer implements SocketInterface
                         $this->write($client, $result . PHP_EOL);
                     }
                 } else {
-                    $this->closeClientSocket($key, $client);
+                    $this->close($client);
+                    unset($this->clients[$key]);
+                    unset($this->socketsStorage[$key]);
                     break;
                 }
             }
@@ -308,24 +345,15 @@ class SocketServer implements SocketInterface
     public function cleanResources()
     {
         if (!empty($this->clients)) {
-            foreach ($this->clients as $key => $client) {
-                $this->closeClientSocket($key, $client);
+            foreach ($this->clients as $client) {
+                $this->close($client);
             }
+
+            unset($this->clients);
         }
 
         $this->close($this->socket);
-    }
-
-    /**
-     * Close socket
-     *
-     * @param $key
-     * @param resource $client
-     */
-    private function closeClientSocket($key, $client)
-    {
-        unset($this->clients[$key]);
-        $this->close($client);
+        unset($this->socket);
     }
 
 }
